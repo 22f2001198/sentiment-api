@@ -6,30 +6,28 @@ from openai import OpenAI
 
 app = FastAPI()
 
-# Load API key (set with: export OPENAI_API_KEY="sk-...")
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# ✅ FIXED: Safe OpenAI client for Railway
+try:
+    client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL", "https://aipipe.org/openai/v1")
+    )
+except:
+    client = None  # Fallback for startup
 
 class CommentRequest(BaseModel):
     comment: str
 
-# ✅ FIXED JSON SCHEMA - This is what OpenAI expects
 response_schema = {
     "type": "json_schema",
     "json_schema": {
-        "name": "sentiment_analysis",  # ← REQUIRED FIELD!
+        "name": "sentiment_analysis",
         "strict": True,
         "schema": {
             "type": "object",
             "properties": {
-                "sentiment": {
-                    "type": "string",
-                    "enum": ["positive", "negative", "neutral"]
-                },
-                "rating": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 5
-                }
+                "sentiment": {"type": "string", "enum": ["positive", "negative", "neutral"]},
+                "rating": {"type": "integer", "minimum": 1, "maximum": 5}
             },
             "required": ["sentiment", "rating"],
             "additionalProperties": False
@@ -42,32 +40,32 @@ async def analyze_comment(request: CommentRequest):
     if not request.comment or not request.comment.strip():
         raise HTTPException(status_code=400, detail="Comment cannot be empty")
     
+    if not client:
+        raise HTTPException(status_code=500, detail="AI service unavailable")
+    
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {
-                    "role": "system",
-                    "content": "Analyze customer feedback sentiment. Return ONLY valid JSON."
-                },
-                {
-                    "role": "user",
-                    "content": f"Comment: {request.comment}"
-                }
+                {"role": "system", "content": "Analyze sentiment. Return ONLY JSON."},
+                {"role": "user", "content": f"Comment: {request.comment}"}
             ],
             response_format=response_schema,
             temperature=0
         )
-        
-        # Parse guaranteed JSON
-        content = response.choices[0].message.content
-        result = json.loads(content)
-        
-        return result
-        
+        return json.loads(response.choices[0].message.content)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Analysis failed")
 
 @app.get("/")
 def root():
-    return {"message": "Sentiment API ready! POST to /comment"}
+    return {
+        "status": "Sentiment API ready!",
+        "ai_ready": client is not None
+    }
+
+# Railway production startup
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
